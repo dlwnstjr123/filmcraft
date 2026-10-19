@@ -1,0 +1,44 @@
+# Opt-in Windows desktop build with FilmCraft's existing Whisper support enabled.
+# This runs on a feature branch so the original main branch is unchanged.
+name: FilmCraft Windows - Whisper captions
+
+on:
+  push:
+    branches:
+      - feature/whisper-windows-build
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-whisper:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out FilmCraft
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95.0"
+
+      - name: Build Windows app with Whisper and model downloading
+        shell: pwsh
+        run: cargo build --release --locked -p filmcraft --features whisper
+
+      - name: Check the executable exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "target/release/filmcraft.exe")) {
+            throw "Windows executable not found after build."
+          }
+
+      - name: Upload unsigned Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: filmcraft-windows-whisper
+          path: target/release/filmcraft.exe
+          if-no-files-found: error
+          retention-days: 14
