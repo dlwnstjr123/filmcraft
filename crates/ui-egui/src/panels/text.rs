@@ -368,13 +368,21 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let content = app.transcript_cache.content(&app.session);
     let words = &content.words;
     if words.is_empty() {
+        // Whisper ships without model weights. Make the missing-model state visible in the
+        // Transcript panel instead of reporting it only in the (easy-to-miss) status bar.
+        let selected_model = app.session.prefs.media_analysis.whisper_model.clone();
+        let speech_models = app.session.execute("transcript.models", json!({})).ok();
+        let model_installed = speech_models.as_ref().is_some_and(|m| speech_model_installed(m, &selected_model));
+        let speech_ready = app.session.transcriber.is_some() || model_installed;
         let c = rect.center();
         icons::paint(ui.painter(), Rect::from_center_size(c - vec2(0.0, 70.0), vec2(40.0, 40.0)), Icon::Captions, t.text_dim);
         ui.painter().text(c - vec2(0.0, 30.0), Align2::CENTER_CENTER, tl!("Transcribe sequence"), Tokens::semibold(16.0), t.text);
-        let note = if filmcraft_speech_available(app) {
-            tl!("Speech-to-text turns the dialogue into editable text.")
+        let note = if !filmcraft_speech_available(app) {
+            tl!("This build has no speech-to-text; import a transcript with transcript.set.").to_owned()
+        } else if !speech_ready {
+            format!("{}: {selected_model}", tl!("Download Speech Model"))
         } else {
-            tl!("This build has no speech-to-text; import a transcript with transcript.set.")
+            tl!("Speech-to-text turns the dialogue into editable text.").to_owned()
         };
         ui.painter().text(c - vec2(0.0, 8.0), Align2::CENTER_CENTER, note, Tokens::ui(12.0), t.text_dim);
         let r = Rect::from_center_size(c + vec2(0.0, 26.0), vec2(200.0, 26.0));
@@ -383,7 +391,21 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), Color32::WHITE);
         app.auto.add("text.transcript.generate", r, "Transcribe");
         if resp.clicked() {
-            actions.push(("transcript.generate".into(), json!({})));
+            if speech_ready {
+                actions.push(("transcript.generate".into(), json!({})));
+            } else {
+                app.ui.status = format!("{}: {selected_model}", tl!("Download Speech Model"));
+            }
+        }
+        if filmcraft_speech_available(app) && !speech_ready {
+            let r = Rect::from_center_size(c + vec2(0.0, 62.0), vec2(200.0, 26.0));
+            let resp = ui.interact(r, egui::Id::new("text.transcript.downloadModel"), Sense::click());
+            ui.painter().rect_filled(r, 13.0, if resp.hovered() { t.accent_hover } else { t.accent });
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Download Speech Model"), Tokens::semibold(12.0), Color32::WHITE);
+            app.auto.add("text.transcript.downloadModel", r, "Download Speech Model");
+            if resp.clicked() {
+                actions.push(("transcript.downloadModel".into(), json!({"model": selected_model})));
+            }
         }
         run(app, ui, actions);
         return;
@@ -471,6 +493,12 @@ fn filmcraft_speech_available(app: &FilmcraftApp) -> bool {
     app.session.transcriber.is_some() || filmcraft_engine::transcript::speech_available()
 }
 
+fn speech_model_installed(catalog: &Value, id: &str) -> bool {
+    catalog.get("models").and_then(Value::as_array).is_some_and(|models| {
+        models.iter().any(|m| m.get("id").and_then(Value::as_str) == Some(id) && m.get("installed").and_then(Value::as_bool) == Some(true))
+    })
+}
+
 fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: usize, actions: &mut Vec<(String, Value)>) {
     let Some(tr) = app.session.active_sequence().and_then(|q| q.caption_tracks.get(track_idx)).cloned() else { return };
     let st = tr.style.clone();
@@ -555,6 +583,18 @@ fn run(app: &mut FilmcraftApp, ui: &egui::Ui, actions: Vec<(String, Value)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speech_model_download_prompt_only_disappears_for_installed_selected_model() {
+        let models = json!({"models": [
+            {"id": "whisper-tiny", "installed": true},
+            {"id": "whisper-base", "installed": false}
+        ]});
+        assert!(!speech_model_installed(&models, "whisper-base"));
+        assert!(speech_model_installed(&models, "whisper-tiny"));
+        assert!(!speech_model_installed(&models, "whisper-small"));
+        assert!(!speech_model_installed(&Value::Null, "whisper-base"));
+    }
 
     /// Latin labels keep the 7 px per character they were laid out with; Japanese labels are as
     /// wide as they are drawn, so they no longer run into the next tab.
